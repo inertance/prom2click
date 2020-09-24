@@ -3,12 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
-	"sort"
+	_"sort"
 	"time"
-
+        _"strings"
 	"sync"
-
-	"github.com/kshvakov/clickhouse"
+        _ "github.com/kshvakov/clickhouse"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -89,14 +88,17 @@ func (w *p2cWriter) Start() {
 			tstart := time.Now()
 			for i := 0; i < w.conf.ChBatch; i++ {
 				var req *p2cRequest
+                                //fmt.Printf("collect batch %d ...",i)
 				// get requet and also check if channel is closed
 				req, ok = <-w.requests
 				if !ok {
 					fmt.Println("Writer stopping..")
 					break
 				}
+                                
 				reqs = append(reqs, req)
 			}
+                        fmt.Printf("collect batch arrive %d \n",w.conf.ChBatch)
 
 			// ensure we have something to send..
 			nmetrics := len(reqs)
@@ -123,10 +125,17 @@ func (w *p2cWriter) Start() {
 
 				// ensure tags are inserted in the same order each time
 				// possibly/probably impacts indexing?
-				sort.Strings(req.tags)
-				_, err = smt.Exec(req.ts, req.name, clickhouse.Array(req.tags),
-					req.val, req.ts)
-
+				// sort.Strings(req.tags)
+                                timeTemplate1 := "2006-01-02"
+                                timeTemplate2 := "2006-01-02 15:04:05"
+                                date := req.ts.Format(timeTemplate1)
+                                h, _ := time.ParseDuration("-8h")
+                                dt := req.ts.Add(h)
+                                datetime := dt.Format(timeTemplate2)
+                                //fmt.Println(date,req.ts,dt,datetime)
+				_, err = smt.Exec(date, req.name, req.tags,
+					req.val, datetime)
+                                //fmt.Println(req.name,req.tags,req.ts)
 				if err != nil {
 					fmt.Printf("Error: statement exec: %s\n", err.Error())
 					w.ko.Add(1.0)
