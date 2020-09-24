@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
+	_"bytes"
 	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
-
+        "encoding/json"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/storage/remote"
 )
@@ -83,65 +83,39 @@ func (r *p2cReader) getSQL(query *remote.Query) (string, error) {
 
 		switch m.Type {
 		case remote.MatchType_EQUAL:
-			var insql bytes.Buffer
-			asql := "arrayExists(x -> x IN (%s), tags) = 1"
-			// value appears to be | sep'd for multiple matches
-			for i, val := range strings.Split(m.Value, "|") {
-				if len(val) < 1 {
-					continue
-				}
-				if i == 0 {
-					istr := fmt.Sprintf(`'%s=%s' `, m.Name, strings.Replace(val, `'`, `\'`, -1))
-					insql.WriteString(istr)
-				} else {
-					istr := fmt.Sprintf(`,'%s=%s' `, m.Name, strings.Replace(val, `'`, `\'`, -1))
-					insql.WriteString(istr)
-				}
-			}
-			wstr := fmt.Sprintf(asql, insql.String())
+                        asql := "JSONExtractString(tags,'%s') = '%s'"
+			wstr := fmt.Sprintf(asql, m.Name,m.Value)
 			mwhereSQL = append(mwhereSQL, wstr)
 
 		case remote.MatchType_NOT_EQUAL:
-			var insql bytes.Buffer
-			asql := "arrayExists(x -> x IN (%s), tags) = 0"
-			// value appears to be | sep'd for multiple matches
-			for i, val := range strings.Split(m.Value, "|") {
-				if len(val) < 1 {
-					continue
-				}
-				if i == 0 {
-					istr := fmt.Sprintf(`'%s=%s' `, m.Name, strings.Replace(val, `'`, `\'`, -1))
-					insql.WriteString(istr)
-				} else {
-					istr := fmt.Sprintf(`,'%s=%s' `, m.Name, strings.Replace(val, `'`, `\'`, -1))
-					insql.WriteString(istr)
-				}
-			}
-			wstr := fmt.Sprintf(asql, insql.String())
+                        asql := "JSONExtractString(tags,'%s') != '%s'"
+			wstr := fmt.Sprintf(asql, m.Name,m.Value)
 			mwhereSQL = append(mwhereSQL, wstr)
 
 		case remote.MatchType_REGEX_MATCH:
-			asql := `arrayExists(x -> 1 == match(x, '^%s=%s'),tags) = 1`
-			// we can't have ^ in the regexp since keys are stored in arrays of key=value
-			if strings.HasPrefix(m.Value, "^") {
-				val := strings.Replace(m.Value, "^", "", 1)
-				val = strings.Replace(val, `/`, `\/`, -1)
-				mwhereSQL = append(mwhereSQL, fmt.Sprintf(asql, m.Name, val))
-			} else {
-				val := strings.Replace(m.Value, `/`, `\/`, -1)
-				mwhereSQL = append(mwhereSQL, fmt.Sprintf(asql, m.Name, val))
-			}
+                        asql := "match(JSONExtractString(tags,'%s'),'%s') = 1"
+                        var val string
+                        if strings.HasPrefix(m.Value, "^") {
+                                val = strings.Replace(m.Value, "^", "", 1)
+                                val = strings.Replace(val, `/`, `\/`, -1)
+                        } else {
+                                val = strings.Replace(m.Value, `/`, `\/`, -1)
+                        }
+			wstr := fmt.Sprintf(asql, m.Name,val)
+			mwhereSQL = append(mwhereSQL, wstr)
 
 		case remote.MatchType_REGEX_NO_MATCH:
-			asql := `arrayExists(x -> 1 == match(x, '^%s=%s'),tags) = 0`
-			if strings.HasPrefix(m.Value, "^") {
-				val := strings.Replace(m.Value, "^", "", 1)
-				val = strings.Replace(val, `/`, `\/`, -1)
-				mwhereSQL = append(mwhereSQL, fmt.Sprintf(asql, m.Name, val))
-			} else {
-				val := strings.Replace(m.Value, `/`, `\/`, -1)
-				mwhereSQL = append(mwhereSQL, fmt.Sprintf(asql, m.Name, val))
-			}
+                        asql := "match(JSONExtractString(tags,'%s'),'%s') = 0"
+                        var val string
+                        if strings.HasPrefix(m.Value, "^") {
+                                val = strings.Replace(m.Value, "^", "", 1)
+                                val = strings.Replace(val, `/`, `\/`, -1)
+                        } else {
+                                val = strings.Replace(m.Value, `/`, `\/`, -1)
+                        }
+			wstr := fmt.Sprintf(asql, m.Name,val)
+			mwhereSQL = append(mwhereSQL, wstr)
+                        
 		}
 	}
 
@@ -214,7 +188,7 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 				cnt   int
 				t     int64
 				name  string
-				tags  []string
+				tags  string
 				value float64
 			)
 			if err = rows.Scan(&cnt, &t, &name, &tags, &value); err != nil {
@@ -224,13 +198,13 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 			//fmt.Printf(fmt.Sprintf("%d,%d,%s,%s,%f\n", cnt, t, name, strings.Join(tags, ":"), value))
 
 			// borrowed from influx remote storage adapter - array sep
-			key := strings.Join(tags, "\xff")
-			ts, ok := tsres[key]
+			//key := strings.Join(tags, "\xff")
+			ts, ok := tsres[tags]
 			if !ok {
 				ts = &remote.TimeSeries{
 					Labels: makeLabels(tags),
 				}
-				tsres[key] = ts
+				tsres[tags] = ts
 			}
 			ts.Samples = append(ts.Samples, &remote.Sample{
 				Value:       float64(value),
@@ -250,22 +224,31 @@ func (r *p2cReader) Read(req *remote.ReadRequest) (*remote.ReadResponse, error) 
 
 }
 
-func makeLabels(tags []string) []*remote.LabelPair {
-	lpairs := make([]*remote.LabelPair, 0, len(tags))
+func makeLabels(tags string) []*remote.LabelPair {
+        datab := []byte(tags)       
+        m := make(map[string]string)
+        err:=json.Unmarshal(datab,&m)
+        if err != nil {
+                fmt.Println("Error parse string to json")
+        }
+        
+        
+	lpairs := make([]*remote.LabelPair, 0, len(m))
 	// (currently) writer includes __name__ in tags so no need to add it here
 	// may change this to save space later..
-	for _, tag := range tags {
-		vals := strings.SplitN(tag, "=", 2)
-		if len(vals) != 2 {
-			fmt.Printf("Error unpacking tag key/val: %s\n", tag)
-			continue
-		}
-		if vals[1] == "" {
-			continue
-		}
+	for key := range m {
+		//vals := strings.SplitN(tag, "=", 2)
+		//if len(vals) != 2 {
+		//	fmt.Printf("Error unpacking tag key/val: %s\n", tag)
+		//	continue
+		//}
+		//if vals[1] == "" {
+		//	continue
+		//}
+                
 		lpairs = append(lpairs, &remote.LabelPair{
-			Name:  vals[0],
-			Value: vals[1],
+			Name:  key,
+			Value: m[key],
 		})
 	}
 	return lpairs
